@@ -20,4 +20,8 @@ Dependencies
   docx2pdf (Final PDF conversion)
 
 Output
-  The final artifact is a PDF titled The_Living_and_Dead_Prince.pdf, featuring a generated Table of Contents, Cover Art, and the complete dual-text comparison. 
+  The final artifact is a PDF titled The_Living_and_Dead_Prince.pdf, featuring a generated Table of Contents, Cover Art, and the complete dual-text comparison.
+
+  Note: 
+  pg1232.txt is a stripped version of [Niccolò Machiavelli's _The Prince_ as translated by W.K. Marriott and hosted at Project Gutenberg]([url](https://www.gutenberg.org/ebooks/1232)).
+  pg57037.txt is a stripped version of [Niccolò Machiavelli's _The Prince_ as translated by Luigi Ricci and hosted at Project Gutenberg]([url](https://www.gutenberg.org/ebooks/57307)).
