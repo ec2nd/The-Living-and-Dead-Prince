@@ -1,9 +1,8 @@
 import re
 import sys
-import os
-import shutil
 import difflib
 import random
+import math
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -13,7 +12,6 @@ try:
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.enum.style import WD_STYLE_TYPE
     from docx.oxml import OxmlElement, ns
     from docx.oxml.ns import qn
     
@@ -78,15 +76,21 @@ SIA = SentimentIntensityAnalyzer()
 # --- NLP ANALYTICS ENGINE ---
 
 def get_metrics(text):
+    """
+    Micro-level analytics for specific text blocks (Divergence Analysis).
+    """
     pos_counts = {'Noun': 0, 'Verb': 0, 'Adj': 0}
     if not text.strip():
         return {'wc': 0, 'sent': 0, 'density': 0, 'avg_len': 0, 'pos': pos_counts}
     
+    # Analyze tokens
     tokens = nltk.word_tokenize(text)
     words = [w.lower() for w in tokens if w.isalnum()]
-    wc = len(words)
+    wc = len(words) # Total Word Count used for Magnitude
     
+    # Sentiment of the WHOLE block
     sent = SIA.polarity_scores(text)['compound']
+    
     unique = len(set(words))
     density = unique / wc if wc > 0 else 0
     avg_len = sum(len(w) for w in words) / wc if wc > 0 else 0
@@ -101,24 +105,89 @@ def get_metrics(text):
 
 # --- VISUALIZATION ENGINE ---
 
+def calculate_bar_width(wc):
+    """
+    Calculates bar width based on Total Word Count (Magnitude).
+    Base unit (1 word) is set to approx width of the Neutral Dot (0.05).
+    Increases linearly per word.
+    """
+    if wc <= 0: return 0.05
+    
+    base_width = 0.05  # Approximate visual width of the 'dot'
+    growth_per_word = 0.012 # Gentle linear growth
+    
+    width = base_width + (wc * growth_per_word)
+    
+    # Cap width at 0.9 to prevent overlapping into the next column too much
+    return min(0.9, width)
+
 def create_sentiment_chart(m1, m2):
+    """
+    Visualizes sentiment.
+    - Bar Height: Sentiment Score
+    - Bar Width: Magnitude (Total Word Count)
+    - Zero Handling: Places a dot AND a horizontal line to show 'mass' even if score is 0.
+    """
     fig, ax = plt.subplots(figsize=(3, 2))
+    
+    x_coords = [0, 1]
     labels = ['T1', 'T2']
     scores = [m1['sent'], m2['sent']]
+    wcs = [m1['wc'], m2['wc']]
+    
+    widths = [calculate_bar_width(w) for w in wcs]
     colors = ['#4CAF50' if s >= 0 else '#F44336' for s in scores]
-    ax.bar(labels, scores, color=colors, alpha=0.7)
-    ax.set_title('Sentiment', fontsize=8)
-    ax.set_ylim(-1, 1)
+    
+    # Plot Bars
+    bars = ax.bar(x_coords, scores, color=colors, alpha=0.7, width=widths)
+    
+    ax.set_xticks(x_coords)
+    ax.set_xticklabels(labels, fontsize=7)
+
+    for i, score in enumerate(scores):
+        # 1. Visualize Neutrality (0.0)
+        # If score is effectively 0, the bar is invisible.
+        # We plot a DOT to show "Neutral Sentiment"
+        # We plot a HORIZONTAL LINE (hlines) to show "Word Volume"
+        if abs(score) < 0.01:
+            # The Dot
+            ax.scatter(x_coords[i], 0, color='black', s=25, zorder=10, label='Neutral')
+            
+            # The Mass Line (Visualizes the width even though height is 0)
+            half_w = widths[i] / 2
+            ax.hlines(0, x_coords[i] - half_w, x_coords[i] + half_w, 
+                      colors='black', linewidth=3, zorder=9, alpha=0.5)
+
+    # 2. Add text labels for Word Count
+    for i, rect in enumerate(bars):
+        height = rect.get_height()
+        width = rect.get_width()
+        
+        # Adjust label position
+        y_pos = height + 0.15 if height >= 0 else height - 0.25
+        if abs(height) < 0.1: y_pos = 0.25 
+        
+        ax.text(x_coords[i], y_pos,
+                f"({wcs[i]}w)",
+                ha='center', va='center', fontsize=6, color='black', alpha=0.8)
+
+    ax.set_title('Sentiment + Vol (Width)', fontsize=8)
+    ax.set_ylim(-1.3, 1.3)
     ax.axhline(0, color='black', linewidth=0.5)
-    ax.tick_params(axis='both', which='major', labelsize=7)
+    ax.tick_params(axis='y', which='major', labelsize=7)
+    
     buf = BytesIO(); plt.tight_layout(); plt.savefig(buf, format='png', dpi=90); plt.close(fig); buf.seek(0)
     return buf
 
 def create_density_chart(m1, m2):
+    if m1['density'] == 0 and m2['density'] == 0: return None
+
     fig, ax = plt.subplots(figsize=(3, 2))
     labels = ['T1', 'T2']
     values = [m1['density'], m2['density']]
-    ax.barh(labels, values, color=['#2196F3', '#FF9800'], alpha=0.7)
+    
+    ax.barh(labels, values, color=['#2196F3', '#FF9800'], alpha=0.7, height=0.5)
+    
     ax.set_title('Lexical Density', fontsize=8)
     ax.set_xlim(0, 1)
     ax.tick_params(axis='both', which='major', labelsize=7)
@@ -128,6 +197,7 @@ def create_density_chart(m1, m2):
 def create_pos_chart(m1, m2):
     v1, v2 = list(m1['pos'].values()), list(m2['pos'].values())
     if sum(v1) == 0 and sum(v2) == 0: return None
+    
     fig, ax = plt.subplots(figsize=(3, 2))
     categories = ['Noun', 'Verb', 'Adj']
     v1 = [m1['pos'].get(k, 0) for k in categories]
@@ -145,11 +215,6 @@ def generate_visual_analysis(doc, t1, t2):
     m2 = get_metrics(t2)
     if m1['wc'] < 5 and m2['wc'] < 5: return
 
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(6)
-    run = p.add_run("NLP Analysis: ")
-    run.font.bold = True; run.font.size = Pt(9)
-    
     delta_sent = abs(m1['sent'] - m2['sent']) / 2.0 
     delta_dens = abs(m1['density'] - m2['density']) 
     total_words = max(1, m1['wc'] + m2['wc'])
@@ -162,29 +227,46 @@ def generate_visual_analysis(doc, t1, t2):
     div_feat = max(metrics_map, key=metrics_map.get)
     conv_feat = min(metrics_map, key=metrics_map.get)
     
-    text = f"The feature of greatest divergence is {div_feat}. The feature of greatest convergence is {conv_feat}."
-    p.add_run(text).font.size = Pt(9)
-
     mode = random.choice(['div', 'conv', 'both'])
-    charts_to_render = []
-    if mode == 'div': charts_to_render.append(div_feat)
-    elif mode == 'conv': charts_to_render.append(conv_feat)
+    charts_requested = []
+    if mode == 'div': charts_requested.append(div_feat)
+    elif mode == 'conv': charts_requested.append(conv_feat)
     else:
-        charts_to_render.append(div_feat)
-        if conv_feat != div_feat: charts_to_render.append(conv_feat)
+        charts_requested.append(div_feat)
+        if conv_feat != div_feat: charts_requested.append(conv_feat)
             
-    if charts_to_render:
-        table = doc.add_table(rows=1, cols=len(charts_to_render))
+    valid_images = []
+    for feature_name in charts_requested:
+        func = chart_map[feature_name]
+        img_stream = func(m1, m2)
+        if img_stream:
+            valid_images.append(img_stream)
+    
+    if valid_images:
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(6)
+        run = p.add_run("NLP Analysis: ")
+        run.font.bold = True; run.font.size = Pt(9)
+        
+        narrative = ""
+        # Check for Double Neutrality
+        if abs(m1['sent']) < 0.01 and abs(m2['sent']) < 0.01:
+            narrative += "Both translations exhibit neutral sentiment (0.0). "
+        else:
+            narrative += f"The feature of greatest divergence is {div_feat}. "
+            
+        narrative += f"The feature of greatest convergence is {conv_feat}."
+        
+        p.add_run(narrative).font.size = Pt(9)
+        
+        table = doc.add_table(rows=1, cols=len(valid_images))
         table.autofit = True
         remove_table_borders(table)
-        for i, feature_name in enumerate(charts_to_render):
-            func = chart_map[feature_name]
-            img_stream = func(m1, m2)
-            if img_stream:
-                cell = table.rows[0].cells[i]
-                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-                cell.paragraphs[0].add_run().add_picture(img_stream, width=Inches(2.0))
-    doc.add_paragraph()
+        for i, img_stream in enumerate(valid_images):
+            cell = table.rows[0].cells[i]
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cell.paragraphs[0].add_run().add_picture(img_stream, width=Inches(2.0))
+        doc.add_paragraph()
 
 # --- UTILITIES ---
 
@@ -211,7 +293,7 @@ def split_by_chapter_boundary(raw_text):
 
 def get_tokens_with_indices(text):
     tokens = []
-    for match in re.finditer(r'\b\w+\b', text):
+    for match in re.finditer(r"\b\w+(?:['’]\w+)*\b", text):
         tokens.append((match.group(0).lower(), match.start(), match.end()))
     return tokens
 
@@ -287,6 +369,7 @@ def force_toc_update(doc):
     settings.append(update_fields)
 
 def generate_toc(doc):
+    # Field code logic from the user's provided snippet
     doc.add_paragraph("Table of Contents", style='Heading 1')
     p = doc.add_paragraph()
     run = p.add_run()
@@ -388,10 +471,6 @@ def process_chapter(doc, title, c1, c2):
     generate_convergence_block(doc, title, style='Heading 1')
     doc.add_paragraph()
     
-    # Sentiment Accumulation for Cover
-    full_text = c1 + " " + c2
-    CHAPTER_SENTIMENTS.append(SIA.polarity_scores(full_text)['compound'])
-    
     c1 = clean_residual_titles(c1); c2 = clean_residual_titles(c2)
     s1, b1 = extract_subtitle(c1); s2, b2 = extract_subtitle(c2)
     
@@ -423,16 +502,12 @@ def process_texts():
     _, ch1 = split_by_chapter_boundary(raw1)
     _, ch2 = split_by_chapter_boundary(raw2)
     
-    # Pre-Pass for Cover Art Sentiment Data
+    # 1. Macro Sentiment Analysis (Pre-Pass) for Cover Art
     print("📊 Analyzing Sentiment Trajectory for Cover...")
     for i in range(max(len(ch1), len(ch2))):
         t1 = ch1[i]['content'] if i < len(ch1) else ""
         t2 = ch2[i]['content'] if i < len(ch2) else ""
         CHAPTER_SENTIMENTS.append(SIA.polarity_scores(t1 + " " + t2)['compound'])
-    
-    # Re-init Sentiments list for loop consistency (though we have data now)
-    # Actually, we can just use the pre-calculated list for the cover, 
-    # and re-calculate or ignore inside the loop.
     
     cover_img = generate_cover_image(CHAPTER_SENTIMENTS)
     
@@ -440,7 +515,7 @@ def process_texts():
     apply_mla_style(doc)
     
     # Insert Cover
-    doc.add_picture(cover_img, width=Inches(8.5))
+    doc.add_picture(cover_img, width=Inches(6.5))
     doc.add_page_break()
     
     generate_title_page(doc)
@@ -451,8 +526,6 @@ def process_texts():
     generate_editor_letter(doc)
 
     max_len = max(len(ch1), len(ch2))
-    # Clear list to avoid duplication during processing loop if we append there too
-    CHAPTER_SENTIMENTS.clear() 
 
     for i in range(max_len):
         c1 = ch1[i] if i < len(ch1) else {'title':'', 'content':''}
